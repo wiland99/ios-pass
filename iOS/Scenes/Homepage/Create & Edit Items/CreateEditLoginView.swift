@@ -93,6 +93,12 @@ struct CreateEditLoginView: View {
                                                        CustomIconPicker(viewModel: viewModel)
                                                    })
                                                    .padding(.bottom, DesignConstant.sectionPadding / 2)
+                        if let message = viewModel.customIconErrorMessage {
+                            InvalidInputLabel(message)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, DesignConstant.sectionPadding)
+                                .padding(.bottom, DesignConstant.sectionPadding / 2)
+                        }
                         editablePasskeySection
                         readOnlyPasskeySection
                         usernamePasswordTOTPSection
@@ -755,8 +761,7 @@ private struct CustomIconPicker: View {
 
     private var thumbnail: some View {
         ZStack {
-            if let image = CustomItemIconRenderer.image(from: viewModel.customIcon,
-                                                        maxPixelSize: Int(size * 3)) {
+            if let image = CustomItemIconImageCache.image(for: viewModel.customIcon) {
                 Image(decorative: image, scale: 1)
                     .resizable()
                     .scaledToFill()

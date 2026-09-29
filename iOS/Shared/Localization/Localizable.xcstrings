@@ -74558,6 +74558,28 @@
         }
       }
     },
+    "Icon image is invalid" : {
+      "comment" : "Error shown under the title of an item whose custom icon is invalid",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Icon image is invalid"
+          }
+        }
+      }
+    },
+    "Icon image is too large" : {
+      "comment" : "Error shown under the title of an item whose custom icon exceeds the size limit",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Icon image is too large"
+          }
+        }
+      }
+    },
     "Identity" : {
       "localizations" : {
         "be" : {
@@ -74755,7 +74777,7 @@
       }
     },
     "Image is too large. Maximum size is %@." : {
-      "comment" : "Error shown when a picked custom item icon is too large. The placeholder is a file size, e.g. \"512 KB\"",
+      "comment" : "Error shown when a picked custom item icon is too large. The placeholder is a file size, e.g. \"20 MB\"",
       "localizations" : {
         "en" : {
           "stringUnit" : {

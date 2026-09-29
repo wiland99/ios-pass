@@ -1093,10 +1093,10 @@ extension BaseCreateEditItemViewModel {
                 let values = try url.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey])
                 let mimeType = values.contentType?.preferredMIMEType ?? ""
                 // Fail before reading the whole file into memory
-                guard CustomItemIcon.MimeType(rawValue: mimeType) != nil else {
+                guard CustomItemIcon.MimeType(rawValue: mimeType)?.isRaster == true else {
                     throw CustomItemIconError.type
                 }
-                if let fileSize = values.fileSize, fileSize > CustomItemIcon.maxInputSize {
+                if let fileSize = values.fileSize, fileSize > CustomItemIconProcessor.maxRasterInputSize {
                     throw CustomItemIconError.size
                 }
                 let data = try Data(contentsOf: url)
@@ -1118,6 +1118,13 @@ extension BaseCreateEditItemViewModel {
         return CustomItemIcon.isValid(customIcon)
     }
 
+    /// Same messages as the web client, `nil` when there is no icon or it is valid
+    var customIconErrorMessage: String? {
+        guard !isCustomIconValid, let customIcon else { return nil }
+        return customIcon.utf8.count > CustomItemIcon.maxLength ?
+            #localized("Icon image is too large") : #localized("Icon image is invalid")
+    }
+
     func handleCustomIconError(_ error: any Error) {
         guard !(error is CancellationError) else { return }
         guard let reason = error as? CustomItemIconError else {
@@ -1131,7 +1138,8 @@ extension BaseCreateEditItemViewModel {
 
         case .size:
             #localized("Image is too large. Maximum size is %@.",
-                       Constants.Attachment.formatter.string(fromByteCount: Int64(CustomItemIcon.maxInputSize)))
+                       Constants.Attachment.formatter
+                           .string(fromByteCount: Int64(CustomItemIconProcessor.maxRasterInputSize)))
 
         case .type:
             #localized("Please select a PNG, JPEG or WebP image.")

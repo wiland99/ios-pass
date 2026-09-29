@@ -19,6 +19,7 @@
 // along with Proton Pass. If not, see https://www.gnu.org/licenses/.
 
 import Client
+import Core
 import DesignSystem
 import DIComposition
 import Entities
@@ -163,7 +164,43 @@ private extension ItemSquircleThumbnail {
                     print(error)
                 }
             }
+
+        case let .customIcon(type, dataUri):
+            if let image = CustomItemIconImageCache.image(for: dataUri) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size.height, height: size.height)
+                    .clipShape(RoundedRectangle(cornerRadius: size.height / 2.5, style: .continuous))
+            } else {
+                SquircleThumbnail(data: iconData(type: type),
+                                  tintColor: type.thumbnailTintColor,
+                                  backgroundColor: alternativeBackground ?
+                                      type.thumbnailAlternativeBackgroundColor : type.thumbnailBackgroundColor,
+                                  height: size.height)
+            }
         }
+    }
+}
+
+/// Decoded custom icons shared by all thumbnails so that list cells do not decode on every render
+@MainActor
+private enum CustomItemIconImageCache {
+    static let cache = NSCache<NSString, UIImage>()
+
+    static func image(for dataUri: String) -> UIImage? {
+        let key = dataUri as NSString
+        if let image = cache.object(forKey: key) {
+            return image
+        }
+        // Largest thumbnail is 60pt, keep enough pixels for 3x screens
+        let maxPixelSize = Int(ItemSquircleThumbnailSize.large.height * 3)
+        guard let cgImage = CustomItemIconRenderer.image(from: dataUri, maxPixelSize: maxPixelSize) else {
+            return nil
+        }
+        let image = UIImage(cgImage: cgImage)
+        cache.setObject(image, forKey: key)
+        return image
     }
 }
 

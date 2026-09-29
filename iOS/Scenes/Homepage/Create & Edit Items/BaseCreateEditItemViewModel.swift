@@ -28,6 +28,7 @@ import Entities
 import FactoryKit
 import Foundation
 import Macro
+import PhotosUI
 import Screens
 
 // swiftlint:disable file_length
@@ -75,6 +76,7 @@ class BaseCreateEditItemViewModel: ObservableObject {
     @Published var note = ""
     /// Carried over from the edited or cloned item so that saving never drops it
     @Published private(set) var customIcon: String?
+    @Published private(set) var isProcessingCustomIcon = false
     @Published var selectedContainer: ShareSelectionPayload
     @Published private(set) var isFreeUser = false
     @Published private(set) var isSaving = false
@@ -190,6 +192,7 @@ class BaseCreateEditItemViewModel: ObservableObject {
     var isSaveable: Bool {
         !title.isEmpty &&
             !isUploadingFile &&
+            !isProcessingCustomIcon &&
             fileUiModels.allSatisfy { $0.state == .uploaded }
     }
 
@@ -200,6 +203,7 @@ class BaseCreateEditItemViewModel: ObservableObject {
     var cancellables = Set<AnyCancellable>()
 
     private var uploadFileTask: Task<Void, Never>?
+    private var customIconTask: Task<Void, Never>?
 
     init(mode: ItemMode,
          upgradeChecker: any UpgradeCheckerProtocol) throws {
@@ -1042,6 +1046,107 @@ private extension BaseCreateEditItemViewModel {
         file.uploadState = .uploaded
         files.upsert(file)
         addTelemetryEvent(with: .fileUploaded(mimeType: file.metadata.mimeType))
+    }
+}
+
+// MARK: - Custom icon
+
+extension BaseCreateEditItemViewModel {
+    func setCustomIcon(from photo: PhotosPickerItem) {
+        let previous = customIconTask
+        previous?.cancel()
+        customIconTask = Task { [weak self] in
+            // Let a superseded selection finish tearing down so it cannot reset the processing state
+            await previous?.value
+            guard let self, !Task.isCancelled else { return }
+            isProcessingCustomIcon = true
+            defer { isProcessingCustomIcon = false }
+            do {
+                guard let data = try await photo.loadTransferable(type: Data.self) else {
+                    throw CustomItemIconError.decode
+                }
+                // The advertised type of a photo can differ from the delivered bytes
+                let mimeType = CustomItemIconProcessor.sniffMimeType(of: data) ?? ""
+                try await applyCustomIcon(data: data, mimeType: mimeType)
+            } catch {
+                handleCustomIconError(error)
+            }
+        }
+    }
+
+    func setCustomIcon(from url: URL) {
+        let previous = customIconTask
+        previous?.cancel()
+        customIconTask = Task { [weak self] in
+            // Let a superseded selection finish tearing down so it cannot reset the processing state
+            await previous?.value
+            guard let self, !Task.isCancelled else { return }
+            isProcessingCustomIcon = true
+            defer { isProcessingCustomIcon = false }
+            do {
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer {
+                    if accessing {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                let values = try url.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey])
+                let mimeType = values.contentType?.preferredMIMEType ?? ""
+                // Fail before reading the whole file into memory
+                guard CustomItemIcon.MimeType(rawValue: mimeType) != nil else {
+                    throw CustomItemIconError.type
+                }
+                if let fileSize = values.fileSize, fileSize > CustomItemIcon.maxInputSize {
+                    throw CustomItemIconError.size
+                }
+                let data = try Data(contentsOf: url)
+                try await applyCustomIcon(data: data, mimeType: mimeType)
+            } catch {
+                handleCustomIconError(error)
+            }
+        }
+    }
+
+    func removeCustomIcon() {
+        customIconTask?.cancel()
+        customIcon = nil
+    }
+
+    /// An icon coming from another client or an import may not pass validation
+    var isCustomIconValid: Bool {
+        guard let customIcon, !customIcon.isEmpty else { return true }
+        return CustomItemIcon.isValid(customIcon)
+    }
+
+    func handleCustomIconError(_ error: any Error) {
+        guard !(error is CancellationError) else { return }
+        guard let reason = error as? CustomItemIconError else {
+            logger.error(error)
+            router.display(element: .displayErrorBanner(error))
+            return
+        }
+        let message = switch reason {
+        case .decode:
+            #localized("Could not read this image.")
+
+        case .size:
+            #localized("Image is too large. Maximum size is %@.",
+                       Constants.Attachment.formatter.string(fromByteCount: Int64(CustomItemIcon.maxInputSize)))
+
+        case .type:
+            #localized("Please select a PNG, JPEG or WebP image.")
+        }
+        router.display(element: .errorMessage(message))
+    }
+}
+
+private extension BaseCreateEditItemViewModel {
+    func applyCustomIcon(data: Data, mimeType: String) async throws {
+        let icon = try await Task.detached(priority: .userInitiated) {
+            try CustomItemIconProcessor.process(data: data, mimeType: mimeType)
+        }.value
+        try Task.checkCancellation()
+        customIcon = icon
     }
 }
 

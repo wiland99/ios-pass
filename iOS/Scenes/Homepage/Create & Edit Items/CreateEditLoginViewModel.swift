@@ -153,6 +153,11 @@ final class CreateEditLoginViewModel: BaseCreateEditItemViewModel, DeinitPrintab
         .login
     }
 
+    /// Like the web client, an invalid icon must be removed before saving
+    override var isSaveable: Bool {
+        super.isSaveable && isCustomIconValid
+    }
+
     override func saveButtonTitle() -> String {
         guard case let .create(type) = mode,
               case let .login(_, _, _, _, _, _, autofill, _) = type,

@@ -35832,6 +35832,26 @@
         }
       }
     },
+    "Choose a file" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a file"
+          }
+        }
+      }
+    },
+    "Choose a photo" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a photo"
+          }
+        }
+      }
+    },
     "City" : {
       "localizations" : {
         "be" : {
@@ -43829,6 +43849,17 @@
         }
       }
     },
+    "Could not read this image." : {
+      "comment" : "Error shown when a picked custom item icon cannot be decoded",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not read this image."
+          }
+        }
+      }
+    },
     "Country" : {
       "localizations" : {
         "be" : {
@@ -47516,6 +47547,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "自訂欄位選單"
+          }
+        }
+      }
+    },
+    "Custom icon" : {
+      "comment" : "Accessibility label of the button to pick a custom icon for an item",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Custom icon"
           }
         }
       }
@@ -74708,6 +74750,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "身分"
+          }
+        }
+      }
+    },
+    "Image is too large. Maximum size is %@." : {
+      "comment" : "Error shown when a picked custom item icon is too large. The placeholder is a file size, e.g. \"512 KB\"",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Image is too large. Maximum size is %@."
           }
         }
       }
@@ -110326,6 +110379,17 @@
         }
       }
     },
+    "Please select a PNG, JPEG or WebP image." : {
+      "comment" : "Error shown when a picked custom item icon has an unsupported format",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Please select a PNG, JPEG or WebP image."
+          }
+        }
+      }
+    },
     "Points balance" : {
       "comment" : "Default custom item field for reward program template",
       "localizations" : {
@@ -117531,6 +117595,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "移除欄位"
+          }
+        }
+      }
+    },
+    "Remove icon" : {
+      "comment" : "Menu item to remove the custom icon of an item",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove icon"
           }
         }
       }

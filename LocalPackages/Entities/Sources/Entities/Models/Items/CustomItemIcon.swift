@@ -30,7 +30,8 @@ import Foundation
 public enum CustomItemIcon {
     /// Raster output size in pixels (square)
     public static let rasterSize = 64
-    /// Maximum source file size in bytes
+    /// Maximum source file size in bytes of the web client, which also accepts SVG.
+    /// iOS only accepts raster sources, see `CustomItemIconProcessor.maxRasterInputSize`
     public static let maxInputSize = 512 * 1_024
     /// Maximum data URI length stored in the item
     public static let maxLength = 32 * 1_024

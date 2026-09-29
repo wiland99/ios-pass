@@ -35,35 +35,25 @@ public enum CustomItemIconError: Error, Equatable, Sendable {
 }
 
 public enum CustomItemIconProcessor {
-    /// Converts image bytes to a `CustomItemIcon` data URI.
-    /// - SVG: kept as vector (original bytes base64-encoded).
-    /// - Raster: center-cropped and scaled to `CustomItemIcon.rasterSize`, exported as PNG.
+    /// Maximum source file size in bytes. Higher than the web client's `CustomItemIcon.maxInputSize`
+    /// because photos are a few MB and the output is always re-rasterized: memory is bounded by
+    /// the source dimensions instead, which are checked before decoding
+    public static let maxRasterInputSize = 20 * 1_024 * 1_024
+
+    /// Converts raster image bytes to a `CustomItemIcon` data URI:
+    /// center-cropped and scaled to `CustomItemIcon.rasterSize`, exported as PNG.
+    /// SVG is rejected because unlike the web client we cannot render it to prove it is an image.
     /// - Throws: `CustomItemIconError` on unaccepted type, oversize input/output or decoding failure.
     public static func process(data: Data, mimeType: String) throws -> String {
-        guard let type = CustomItemIcon.MimeType(rawValue: mimeType) else {
+        guard let type = CustomItemIcon.MimeType(rawValue: mimeType), type.isRaster else {
             throw CustomItemIconError.type
         }
 
-        guard data.count <= CustomItemIcon.maxInputSize else {
+        guard data.count <= maxRasterInputSize else {
             throw CustomItemIconError.size
         }
 
-        let icon: String
-        if type.isRaster {
-            icon = try CustomItemIcon.dataUri(mimeType: .png, data: rasterize(data))
-        } else {
-            // SVGs are stored as-is: fail early if the encoded data URI would be too long
-            guard CustomItemIcon.dataUriLength(mimeType: type, byteCount: data.count)
-                <= CustomItemIcon.maxLength else {
-                throw CustomItemIconError.size
-            }
-            // Unlike the web client we cannot render SVGs to prove they are images
-            guard let svg = String(data: data, encoding: .utf8),
-                  svg.range(of: "<svg", options: .caseInsensitive) != nil else {
-                throw CustomItemIconError.decode
-            }
-            icon = CustomItemIcon.dataUri(mimeType: type, data: data)
-        }
+        let icon = try CustomItemIcon.dataUri(mimeType: .png, data: rasterize(data, type: type))
 
         guard icon.utf8.count <= CustomItemIcon.maxLength else {
             throw CustomItemIconError.size
@@ -88,20 +78,29 @@ public enum CustomItemIconProcessor {
 }
 
 private extension CustomItemIconProcessor {
-    /// Upper bound of the intermediate decoded image so that a small file with huge
-    /// dimensions (decompression bomb) is never fully decoded in memory
+    /// Upper bounds of the source image, read from its header before decoding.
+    /// The thumbnail API only bounds the output: PNG and WebP are still fully decoded first,
+    /// so a small file with huge dimensions (decompression bomb) could allocate gigabytes
+    static let maxSourcePixelSize = 8_192
+    static let maxSourcePixelCount = 40_000_000
+
+    /// Upper bound of the downsampled image for extreme aspect ratios
     static let maxDecodedPixelSize = 4_096
 
-    static func rasterize(_ data: Data) throws -> Data {
+    static func rasterize(_ data: Data, type: CustomItemIcon.MimeType) throws -> Data {
         let size = CustomItemIcon.rasterSize
 
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+        guard let source = makeImageSource(data, type: type),
               CGImageSourceGetCount(source) > 0,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let sourceWidth = properties[kCGImagePropertyPixelWidth] as? Int,
-              let sourceHeight = properties[kCGImagePropertyPixelHeight] as? Int,
-              sourceWidth > 0, sourceHeight > 0 else {
+              let sourceSize = pixelSize(of: source) else {
             throw CustomItemIconError.decode
+        }
+
+        let (sourceWidth, sourceHeight) = sourceSize
+        guard sourceWidth <= maxSourcePixelSize,
+              sourceHeight <= maxSourcePixelSize,
+              sourceWidth * sourceHeight <= maxSourcePixelCount else {
+            throw CustomItemIconError.size
         }
 
         // Downsample while decoding, keeping enough pixels on the short side to crop a sharp square
@@ -164,18 +163,26 @@ private extension CustomItemIconProcessor {
 }
 
 public enum CustomItemIconRenderer {
+    /// Stored icons are `CustomItemIcon.rasterSize` pixels wide, anything much larger is not
+    /// produced by a Pass client and could be a decompression bomb
+    static let maxSourcePixelSize = 512
+
     /// Decodes a raster `CustomItemIcon` for display, downsampled to `maxPixelSize`.
-    /// Returns `nil` for invalid icons, SVGs (not supported) and undecodable data.
+    /// Returns `nil` for invalid icons, SVGs (not supported), bytes that do not match the declared type,
+    /// multi-frame or oversized images and undecodable data.
     public static func image(from icon: String?, maxPixelSize: Int) -> CGImage? {
+        // Icons come from shared items: only a single-frame image of the declared type and
+        // of reasonable dimensions (read from its header) is ever handed to the decoder
         guard let decoded = CustomItemIcon.decode(icon),
               decoded.mimeType.isRaster,
-              let source = CGImageSourceCreateWithData(decoded.data as CFData, nil),
-              CGImageSourceGetCount(source) > 0 else {
+              let source = makeImageSource(decoded.data, type: decoded.mimeType),
+              CGImageSourceGetCount(source) == 1,
+              let size = pixelSize(of: source),
+              (1...maxSourcePixelSize).contains(size.width),
+              (1...maxSourcePixelSize).contains(size.height) else {
             return nil
         }
 
-        // Always go through the thumbnail API so that an oversized image
-        // coming from an untrusted shared item is never fully decoded
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -184,4 +191,67 @@ public enum CustomItemIconRenderer {
         ]
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
+}
+
+/// Decoded custom icons shared by all views so that they are not decoded on every render
+@MainActor
+public enum CustomItemIconImageCache {
+    /// Largest thumbnail is 60pt, keep enough pixels for 3x screens
+    public static let maxPixelSize = 180
+
+    private static let cache = NSCache<NSString, CGImage>()
+
+    public static func image(for icon: String?) -> CGImage? {
+        guard let icon else { return nil }
+        let key = icon as NSString
+        if let image = cache.object(forKey: key) {
+            return image
+        }
+        guard let image = CustomItemIconRenderer.image(from: icon, maxPixelSize: maxPixelSize) else {
+            return nil
+        }
+        cache.setObject(image, forKey: key)
+        return image
+    }
+}
+
+// MARK: - Image source
+
+private extension CustomItemIcon.MimeType {
+    var typeIdentifier: String {
+        switch self {
+        case .png:
+            UTType.png.identifier
+
+        case .jpeg:
+            UTType.jpeg.identifier
+
+        case .webp:
+            UTType.webP.identifier
+
+        case .svg:
+            UTType.svg.identifier
+        }
+    }
+}
+
+/// ImageIO sniffs the real format from the bytes regardless of the declared type,
+/// so only accept a source whose detected type is the declared one
+private func makeImageSource(_ data: Data, type: CustomItemIcon.MimeType) -> CGImageSource? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+          CGImageSourceGetType(source) as String? == type.typeIdentifier else {
+        return nil
+    }
+    return source
+}
+
+/// Dimensions of the first image read from the header, without decoding pixels
+private func pixelSize(of source: CGImageSource) -> (width: Int, height: Int)? {
+    guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? Int,
+          let height = properties[kCGImagePropertyPixelHeight] as? Int,
+          width > 0, height > 0 else {
+        return nil
+    }
+    return (width, height)
 }

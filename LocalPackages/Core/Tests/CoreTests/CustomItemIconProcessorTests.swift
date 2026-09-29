@@ -45,9 +45,9 @@ struct CustomItemIconProcessorTests {
         }
     }
 
-    @Test("Reject input larger than max input size", arguments: CustomItemIcon.MimeType.allCases)
+    @Test("Reject input larger than max raster input size", arguments: [CustomItemIcon.MimeType.png, .jpeg, .webp])
     func rejectInputSize(mimeType: CustomItemIcon.MimeType) {
-        let data = Data(repeating: 0, count: CustomItemIcon.maxInputSize + 1)
+        let data = Data(repeating: 0, count: CustomItemIconProcessor.maxRasterInputSize + 1)
         #expect(throws: CustomItemIconError.size) {
             try CustomItemIconProcessor.process(data: data, mimeType: mimeType.rawValue)
         }
@@ -55,35 +55,63 @@ struct CustomItemIconProcessorTests {
 
     @Test("Check MIME type before size")
     func typeBeforeSize() {
-        let data = Data(repeating: 0, count: CustomItemIcon.maxInputSize + 1)
+        let data = Data(repeating: 0, count: CustomItemIconProcessor.maxRasterInputSize + 1)
         #expect(throws: CustomItemIconError.type) {
             try CustomItemIconProcessor.process(data: data, mimeType: "image/gif")
         }
     }
 
-    @Test("Reject SVG whose data URI would exceed max length before decoding")
-    func rejectLargeSvg() {
-        // 32 KB of raw bytes encodes to ~43 KB of base64. Not an SVG either,
-        // so a `size` error proves the length is checked before the content
-        let data = Data(repeating: 0, count: CustomItemIcon.maxLength)
-        #expect(throws: CustomItemIconError.size) {
+    @Test("Reject SVG because it cannot be verified",
+          arguments: [Data(svgSource.utf8), Data(), Data(repeating: 0, count: CustomItemIcon.maxLength)])
+    func rejectSvg(data: Data) {
+        #expect(throws: CustomItemIconError.type) {
             try CustomItemIconProcessor.process(data: data, mimeType: CustomItemIcon.MimeType.svg.rawValue)
         }
     }
 
-    @Test("Keep SVG as vector data URI")
-    func keepSvg() throws {
-        let data = Data(svgSource.utf8)
-        let icon = try CustomItemIconProcessor.process(data: data, mimeType: CustomItemIcon.MimeType.svg.rawValue)
-        #expect(icon == "data:image/svg+xml;base64,\(data.base64EncodedString())")
-        #expect(CustomItemIcon.isValid(icon))
+    @Test("Accept a photo larger than the web client's max input size")
+    func acceptLargePhoto() throws {
+        // Noise does not compress, like a real photo
+        let data = try makeImageData(width: 2_000, height: 1_500, type: .jpeg) { context in
+            guard let pixels = context.data else { return }
+            var generator = SystemRandomNumberGenerator()
+            for offset in stride(from: 0, to: context.bytesPerRow * context.height, by: 8) {
+                pixels.storeBytes(of: generator.next(), toByteOffset: offset, as: UInt64.self)
+            }
+        }
+        try #require(data.count > CustomItemIcon.maxInputSize)
+
+        let icon = try CustomItemIconProcessor.process(data: data, mimeType: "image/jpeg")
+
+        let output = try decodeImage(icon)
+        #expect(output.width == CustomItemIcon.rasterSize)
+        #expect(output.height == CustomItemIcon.rasterSize)
     }
 
-    @Test("Reject SVG that is not SVG markup",
-          arguments: [Data(), Data("hello".utf8), Data([0xFF, 0xFE, 0x00])])
-    func rejectInvalidSvg(data: Data) {
+    @Test("Reject source dimensions that would exhaust memory when decoded",
+          arguments: [(8_193, 1), (1, 8_193)])
+    func rejectLargeDimensions(width: Int, height: Int) throws {
+        let data = try makeImageData(width: width, height: height, type: .png)
+        #expect(throws: CustomItemIconError.size) {
+            try CustomItemIconProcessor.process(data: data, mimeType: "image/png")
+        }
+    }
+
+    @Test("Reject decompression bomb before decoding")
+    func rejectDecompressionBomb() throws {
+        // Both sides are allowed but 6400 x 6400 is over the pixel count limit
+        let data = try makeBombPng(width: 6_400, height: 6_400)
+        try #require(data.count <= CustomItemIcon.maxInputSize)
+        #expect(throws: CustomItemIconError.size) {
+            try CustomItemIconProcessor.process(data: data, mimeType: "image/png")
+        }
+    }
+
+    @Test("Reject bytes that do not match the declared type", arguments: mismatchedTypes)
+    func rejectMismatchedType(type: UTType) throws {
+        let data = try makeImageData(width: 16, height: 16, type: type)
         #expect(throws: CustomItemIconError.decode) {
-            try CustomItemIconProcessor.process(data: data, mimeType: CustomItemIcon.MimeType.svg.rawValue)
+            try CustomItemIconProcessor.process(data: data, mimeType: "image/png")
         }
     }
 
@@ -191,7 +219,65 @@ struct CustomItemIconProcessorTests {
     func doNotRender(icon: String?) {
         #expect(CustomItemIconRenderer.image(from: icon, maxPixelSize: 180) == nil)
     }
+
+    @Test("Do not render bytes that do not match the declared type", arguments: mismatchedTypes)
+    func doNotRenderMismatchedType(type: UTType) throws {
+        let data = try makeImageData(width: 16, height: 16, type: type)
+        for mimeType in [CustomItemIcon.MimeType.png, .jpeg, .webp] where UTType(mimeType: mimeType.rawValue) != type {
+            let icon = CustomItemIcon.dataUri(mimeType: mimeType, data: data)
+            try #require(CustomItemIcon.isValid(icon))
+            #expect(CustomItemIconRenderer.image(from: icon, maxPixelSize: 180) == nil,
+                    "\(type.identifier) declared as \(mimeType.rawValue)")
+        }
+    }
+
+    @Test("Do not render multi-frame images")
+    func doNotRenderAnimated() throws {
+        let data = try makeImageData(width: 8, height: 8, type: .png, frameCount: 2)
+        let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+        try #require(CGImageSourceGetCount(source) == 2)
+
+        let icon = CustomItemIcon.dataUri(mimeType: .png, data: data)
+        #expect(CustomItemIconRenderer.image(from: icon, maxPixelSize: 180) == nil)
+    }
+
+    @Test("Do not render oversized dimensions", arguments: [(513, 1), (1, 513)])
+    func doNotRenderLargeDimensions(width: Int, height: Int) throws {
+        let data = try makeImageData(width: width, height: height, type: .png)
+        let icon = CustomItemIcon.dataUri(mimeType: .png, data: data)
+        try #require(CustomItemIcon.isValid(icon))
+        #expect(CustomItemIconRenderer.image(from: icon, maxPixelSize: 180) == nil)
+    }
+
+    @Test("Do not render decompression bomb")
+    func doNotRenderDecompressionBomb() throws {
+        let icon = try CustomItemIcon.dataUri(mimeType: .png, data: makeBombPng(width: 14_000, height: 14_000))
+        try #require(CustomItemIcon.isValid(icon))
+        #expect(CustomItemIconRenderer.image(from: icon, maxPixelSize: 180) == nil)
+    }
+
+    @Test("Render largest accepted dimensions")
+    func renderLargestDimensions() throws {
+        let data = try makeImageData(width: 512, height: 512, type: .png)
+        let icon = CustomItemIcon.dataUri(mimeType: .png, data: data)
+        try #require(CustomItemIcon.isValid(icon))
+        #expect(CustomItemIconRenderer.image(from: icon, maxPixelSize: 180) != nil)
+    }
+
+    @Test("Cache rendered icons")
+    @MainActor
+    func cache() throws {
+        let icon = try CustomItemIconProcessor.process(data: makeImageData(width: 8, height: 8, type: .png),
+                                                       mimeType: "image/png")
+        let image = try #require(CustomItemIconImageCache.image(for: icon))
+        #expect(CustomItemIconImageCache.image(for: icon) === image)
+        #expect(CustomItemIconImageCache.image(for: nil) == nil)
+        #expect(CustomItemIconImageCache.image(for: "data:image/png;base64,QUJD") == nil)
+    }
 }
+
+/// Formats ImageIO decodes although they are not accepted, plus an accepted one to prove the exact type is checked
+private let mismatchedTypes: [UTType] = [.gif, .tiff, .bmp, .ico, .pdf, .jpeg]
 
 // MARK: - Helpers
 
@@ -209,6 +295,7 @@ private struct RGBA: CustomStringConvertible {
 private func makeImageData(width: Int,
                            height: Int,
                            type: UTType,
+                           frameCount: Int = 1,
                            draw: ((CGContext) -> Void)? = nil) throws -> Data {
     let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
     let context = try #require(CGContext(data: nil,
@@ -229,11 +316,46 @@ private func makeImageData(width: Int,
     let data = NSMutableData()
     let destination = try #require(CGImageDestinationCreateWithData(data as CFMutableData,
                                                                     type.identifier as CFString,
-                                                                    1,
+                                                                    frameCount,
                                                                     nil))
-    CGImageDestinationAddImage(destination, image, nil)
+    for _ in 0..<frameCount {
+        CGImageDestinationAddImage(destination, image, nil)
+    }
     try #require(CGImageDestinationFinalize(destination))
     return data as Data
+}
+
+/// 1-bit grayscale PNG of zeros: a few KB to store, `width * height` pixels once decoded
+private func makeBombPng(width: Int, height: Int) throws -> Data {
+    // Each row is a filter type byte followed by the packed pixels
+    let raw = Data(count: (1 + (width + 7) / 8) * height)
+    // `.zlib` is raw DEFLATE: wrap it in a zlib stream. The Adler-32 of n zero bytes is (n % 65521) << 16 | 1
+    let zlib = try Data([0x78, 0x9C]) + (raw as NSData).compressed(using: .zlib) +
+        bigEndian(UInt32(raw.count % 65_521) << 16 | 1)
+
+    let header = bigEndian(UInt32(width)) + bigEndian(UInt32(height)) + Data([1, 0, 0, 0, 0])
+    return Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) +
+        pngChunk("IHDR", header) + pngChunk("IDAT", zlib) + pngChunk("IEND", Data())
+}
+
+private func pngChunk(_ type: String, _ body: Data) -> Data {
+    let typeAndBody = Data(type.utf8) + body
+    return bigEndian(UInt32(body.count)) + typeAndBody + bigEndian(crc32(typeAndBody))
+}
+
+private func bigEndian(_ value: UInt32) -> Data {
+    withUnsafeBytes(of: value.bigEndian) { Data($0) }
+}
+
+private func crc32(_ data: Data) -> UInt32 {
+    var crc: UInt32 = 0xFFFF_FFFF
+    for byte in data {
+        crc ^= UInt32(byte)
+        for _ in 0..<8 {
+            crc = crc & 1 == 1 ? (crc >> 1) ^ 0xEDB8_8320 : crc >> 1
+        }
+    }
+    return ~crc
 }
 
 private func decodeImage(_ icon: String) throws -> CGImage {

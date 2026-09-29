@@ -198,7 +198,8 @@ final class CreateEditLoginViewModel: BaseCreateEditItemViewModel, DeinitPrintab
                                        note: note,
                                        itemUuid: UUID().uuidString,
                                        data: logInData,
-                                       customFields: customFields)
+                                       customFields: customFields,
+                                       customIcon: customIcon)
         } catch {
             totpUriErrorMessage = #localized("Invalid TOTP URI")
             return nil

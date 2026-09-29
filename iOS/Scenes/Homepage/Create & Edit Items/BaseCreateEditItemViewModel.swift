@@ -73,6 +73,8 @@ struct ItemEditionAlertContent {
 class BaseCreateEditItemViewModel: ObservableObject {
     @Published var title = ""
     @Published var note = ""
+    /// Carried over from the edited or cloned item so that saving never drops it
+    @Published private(set) var customIcon: String?
     @Published var selectedContainer: ShareSelectionPayload
     @Published private(set) var isFreeUser = false
     @Published private(set) var isSaving = false
@@ -262,10 +264,12 @@ class BaseCreateEditItemViewModel: ObservableObject {
         case let .clone(itemContent):
             title = #localized("%@ (copied)", itemContent.name)
             note = itemContent.note
+            customIcon = itemContent.customIcon
 
         case let .edit(itemContent):
             title = itemContent.name
             note = itemContent.note
+            customIcon = itemContent.customIcon
         }
     }
 

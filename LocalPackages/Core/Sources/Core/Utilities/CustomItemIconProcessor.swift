@@ -30,6 +30,8 @@ public enum CustomItemIconError: Error, Equatable, Sendable {
     case type
     /// Input or output exceeds the size limits
     case size
+    /// Source resolution exceeds `CustomItemIconProcessor.maxMegapixels(for:)` of its type
+    case dimensions(maxMegapixels: Int)
     /// The image could not be decoded or encoded
     case decode
 }
@@ -40,10 +42,16 @@ public enum CustomItemIconProcessor {
     /// the source dimensions instead, which are checked before decoding
     public static let maxRasterInputSize = 20 * 1_024 * 1_024
 
+    /// Maximum source resolution in megapixels for a raster type, checked before decoding
+    public static func maxMegapixels(for type: CustomItemIcon.MimeType) -> Int {
+        SourceLimits(type).maxPixelCount / 1_000_000
+    }
+
     /// Converts raster image bytes to a `CustomItemIcon` data URI:
     /// center-cropped and scaled to `CustomItemIcon.rasterSize`, exported as PNG.
     /// SVG is rejected because unlike the web client we cannot render it to prove it is an image.
-    /// - Throws: `CustomItemIconError` on unaccepted type, oversize input/output or decoding failure.
+    /// - Throws: `CustomItemIconError` on unaccepted type, oversize input/output, too high resolution
+    ///   or decoding failure.
     public static func process(data: Data, mimeType: String) throws -> String {
         guard let type = CustomItemIcon.MimeType(rawValue: mimeType), type.isRaster else {
             throw CustomItemIconError.type
@@ -77,13 +85,29 @@ public enum CustomItemIconProcessor {
     }
 }
 
-private extension CustomItemIconProcessor {
-    /// Upper bounds of the source image, read from its header before decoding.
-    /// The thumbnail API only bounds the output: PNG and WebP are still fully decoded first,
-    /// so a small file with huge dimensions (decompression bomb) could allocate gigabytes
-    static let maxSourcePixelSize = 8_192
-    static let maxSourcePixelCount = 40_000_000
+/// Upper bounds of the source image, read from its header before decoding.
+/// The thumbnail API only bounds the output: PNG and WebP are still fully decoded first,
+/// so a small file with huge dimensions (decompression bomb) could allocate gigabytes.
+/// JPEG is downscaled while decoding (DCT scaling): 48 MP and 100 MP JPEGs, baseline or progressive,
+/// raise peak memory by about 10-20 MB instead of the 190-380 MB of a full decode, so 48 MP photos are allowed
+private struct SourceLimits {
+    let maxPixelSize: Int
+    let maxPixelCount: Int
 
+    init(_ type: CustomItemIcon.MimeType) {
+        switch type {
+        case .jpeg:
+            maxPixelSize = 12_000
+            maxPixelCount = 100_000_000
+
+        case .png, .svg, .webp:
+            maxPixelSize = 8_192
+            maxPixelCount = 40_000_000
+        }
+    }
+}
+
+private extension CustomItemIconProcessor {
     /// Upper bound of the downsampled image for extreme aspect ratios
     static let maxDecodedPixelSize = 4_096
 
@@ -97,10 +121,11 @@ private extension CustomItemIconProcessor {
         }
 
         let (sourceWidth, sourceHeight) = sourceSize
-        guard sourceWidth <= maxSourcePixelSize,
-              sourceHeight <= maxSourcePixelSize,
-              sourceWidth * sourceHeight <= maxSourcePixelCount else {
-            throw CustomItemIconError.size
+        let limits = SourceLimits(type)
+        guard sourceWidth <= limits.maxPixelSize,
+              sourceHeight <= limits.maxPixelSize,
+              sourceWidth * sourceHeight <= limits.maxPixelCount else {
+            throw CustomItemIconError.dimensions(maxMegapixels: maxMegapixels(for: type))
         }
 
         // Downsample while decoding, keeping enough pixels on the short side to crop a sharp square

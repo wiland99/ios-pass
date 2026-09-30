@@ -74787,6 +74787,17 @@
         }
       }
     },
+    "Image resolution is too high. Maximum is %lld megapixels." : {
+      "comment" : "Error shown when a picked custom item icon has too many pixels. The placeholder is a number of megapixels, e.g. \"100\"",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Image resolution is too high. Maximum is %lld megapixels."
+          }
+        }
+      }
+    },
     "Immediately" : {
       "localizations" : {
         "be" : {

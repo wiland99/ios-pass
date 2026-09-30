@@ -1141,6 +1141,9 @@ extension BaseCreateEditItemViewModel {
                        Constants.Attachment.formatter
                            .string(fromByteCount: Int64(CustomItemIconProcessor.maxRasterInputSize)))
 
+        case let .dimensions(maxMegapixels):
+            #localized("Image resolution is too high. Maximum is %lld megapixels.", maxMegapixels)
+
         case .type:
             #localized("Please select a PNG, JPEG or WebP image.")
         }

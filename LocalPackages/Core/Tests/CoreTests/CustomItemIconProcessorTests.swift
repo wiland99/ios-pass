@@ -88,12 +88,50 @@ struct CustomItemIconProcessorTests {
         #expect(output.height == CustomItemIcon.rasterSize)
     }
 
+    @Test("Accept a 48 MP photo")
+    func accept48MegapixelPhoto() throws {
+        // Resolution of the 48 MP iPhone cameras
+        let data = try makeLargeJpeg(width: 8_064, height: 6_048)
+        try #require(data.count <= CustomItemIconProcessor.maxRasterInputSize)
+
+        let icon = try CustomItemIconProcessor.process(data: data, mimeType: "image/jpeg")
+
+        let output = try decodeImage(icon)
+        #expect(output.width == CustomItemIcon.rasterSize)
+        #expect(output.height == CustomItemIcon.rasterSize)
+    }
+
+    @Test("Resolution limits per type")
+    func maxMegapixels() {
+        #expect(CustomItemIconProcessor.maxMegapixels(for: .jpeg) == 100)
+        #expect(CustomItemIconProcessor.maxMegapixels(for: .png) == 40)
+        #expect(CustomItemIconProcessor.maxMegapixels(for: .webp) == 40)
+    }
+
     @Test("Reject source dimensions that would exhaust memory when decoded",
           arguments: [(8_193, 1), (1, 8_193)])
     func rejectLargeDimensions(width: Int, height: Int) throws {
         let data = try makeImageData(width: width, height: height, type: .png)
-        #expect(throws: CustomItemIconError.size) {
+        #expect(throws: CustomItemIconError.dimensions(maxMegapixels: 40)) {
             try CustomItemIconProcessor.process(data: data, mimeType: "image/png")
+        }
+    }
+
+    @Test("Reject a PNG with the resolution of a 48 MP photo")
+    func rejectLargePng() throws {
+        // Both sides are allowed but 8064 x 6048 is over the PNG pixel count limit
+        let data = try makeBombPng(width: 8_064, height: 6_048)
+        #expect(throws: CustomItemIconError.dimensions(maxMegapixels: 40)) {
+            try CustomItemIconProcessor.process(data: data, mimeType: "image/png")
+        }
+    }
+
+    @Test("Reject JPEG dimensions over the JPEG limits",
+          arguments: [(12_001, 1), (1, 12_001), (12_000, 8_334)])
+    func rejectLargeJpegDimensions(width: Int, height: Int) throws {
+        let data = try makeLargeJpeg(width: width, height: height)
+        #expect(throws: CustomItemIconError.dimensions(maxMegapixels: 100)) {
+            try CustomItemIconProcessor.process(data: data, mimeType: "image/jpeg")
         }
     }
 
@@ -102,7 +140,7 @@ struct CustomItemIconProcessorTests {
         // Both sides are allowed but 6400 x 6400 is over the pixel count limit
         let data = try makeBombPng(width: 6_400, height: 6_400)
         try #require(data.count <= CustomItemIcon.maxInputSize)
-        #expect(throws: CustomItemIconError.size) {
+        #expect(throws: CustomItemIconError.dimensions(maxMegapixels: 40)) {
             try CustomItemIconProcessor.process(data: data, mimeType: "image/png")
         }
     }
@@ -336,6 +374,39 @@ private func makeBombPng(width: Int, height: Int) throws -> Data {
     let header = bigEndian(UInt32(width)) + bigEndian(UInt32(height)) + Data([1, 0, 0, 0, 0])
     return Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) +
         pngChunk("IHDR", header) + pngChunk("IDAT", zlib) + pngChunk("IEND", Data())
+}
+
+/// Uniform gray JPEG encoded from rows generated on demand, so that 100 MP fixtures do not need a 300 MB bitmap
+private func makeLargeJpeg(width: Int, height: Int) throws -> Data {
+    var callbacks = CGDataProviderSequentialCallbacks(version: 0,
+                                                      getBytes: { _, buffer, count in
+                                                          memset(buffer, 0x80, count)
+                                                          return count
+                                                      },
+                                                      skipForward: { _, count in count },
+                                                      rewind: { _ in },
+                                                      releaseInfo: nil)
+    let provider = try #require(CGDataProvider(sequentialInfo: nil, callbacks: &callbacks))
+    let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+    let image = try #require(CGImage(width: width,
+                                     height: height,
+                                     bitsPerComponent: 8,
+                                     bitsPerPixel: 24,
+                                     bytesPerRow: width * 3,
+                                     space: colorSpace,
+                                     bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                                     provider: provider,
+                                     decode: nil,
+                                     shouldInterpolate: false,
+                                     intent: .defaultIntent))
+    let data = NSMutableData()
+    let destination = try #require(CGImageDestinationCreateWithData(data as CFMutableData,
+                                                                    UTType.jpeg.identifier as CFString,
+                                                                    1,
+                                                                    nil))
+    CGImageDestinationAddImage(destination, image, nil)
+    try #require(CGImageDestinationFinalize(destination))
+    return data as Data
 }
 
 private func pngChunk(_ type: String, _ body: Data) -> Data {

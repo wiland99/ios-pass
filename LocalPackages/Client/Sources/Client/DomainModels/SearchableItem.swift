@@ -300,7 +300,8 @@ public extension SearchableItem {
                            type: type,
                            title: name,
                            url: url,
-                           description: note)
+                           description: note,
+                           customIcon: customIcon)
     }
 }
 
